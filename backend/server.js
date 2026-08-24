@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import serverless from 'serverless-http';  // 👈 AJOUT
 
 dotenv.config();
 
@@ -133,7 +134,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
     creditSales.forEach(sale => {
       const amount = sale.total_amount;
       const opName = sale.operators?.name || 'Autre';
-      const type = sale.sale_type || 'emoney'; // Par défaut 'emoney'
+      const type = sale.sale_type || 'emoney';
 
       if (type === 'megas') totalMegas += amount;
       else if (type === 'unites') totalUnites += amount;
@@ -151,7 +152,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
 
     if (productError) throw productError;
 
-    // Alertes et stocks totaux
     const alerts = allProducts.filter(p => p.current_stock <= p.reorder_level);
     const totalStockBottles = allProducts.reduce((sum, p) => sum + p.current_stock, 0);
     const totalStockPackets = allProducts.reduce((sum, p) => {
@@ -465,7 +465,6 @@ app.post('/api/operator/stock/add', async (req, res) => {
     if (!operator_id || !type || !quantity || quantity <= 0) {
       return res.status(400).json({ success: false, error: 'Champs requis manquants ou invalides' });
     }
-    // Mapping des types vers les colonnes
     const fieldMap = {
       'mega': 'stock_megas',
       'unite': 'stock_unites',
@@ -476,7 +475,6 @@ app.post('/api/operator/stock/add', async (req, res) => {
     if (!field) {
       return res.status(400).json({ success: false, error: 'Type invalide' });
     }
-    // Récupérer la valeur actuelle
     const { data: op, error: fetchError } = await supabase
       .from('operators')
       .select(field)
@@ -634,7 +632,6 @@ app.post('/api/users', async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'Email et mot de passe requis' });
     }
-    // Hacher le mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
     const { data, error } = await supabase
       .from('users')
@@ -658,7 +655,6 @@ app.put('/api/users/:id', async (req, res) => {
     const { email, full_name, role, active, password } = req.body;
     const updateData = { email, full_name, role, active, updated_at: new Date().toISOString() };
     if (password) {
-      // Hacher le nouveau mot de passe s'il est fourni
       updateData.password = await bcrypt.hash(password, 10);
     }
     const { data, error } = await supabase
@@ -744,7 +740,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email et mot de passe requis' });
     }
 
-    // Récupérer l'utilisateur
     const { data: user, error } = await supabase
       .from('users')
       .select('id, email, full_name, role, active, password')
@@ -759,20 +754,17 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Compte désactivé' });
     }
 
-    // Vérifier le mot de passe (hashé avec bcrypt)
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ success: false, error: 'Identifiants incorrects' });
     }
 
-    // Générer un token JWT
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    // Ne pas renvoyer le mot de passe
     delete user.password;
 
     res.json({
@@ -822,9 +814,16 @@ app.get('/api/auth/me', async (req, res) => {
 });
 
 // =============================================
-// Démarrer le serveur
+// ✅ EXPORT POUR VERCEL (serverless)
 // =============================================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Backend démarré sur http://localhost:${PORT}`);
-});
+// On remplace app.listen par l'export du handler
+export const handler = serverless(app);
+
+// En local, on peut quand même écouter si on veut
+// (optionnel, pour le développement)
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Backend démarré sur http://localhost:${PORT}`);
+  });
+}
