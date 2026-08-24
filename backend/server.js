@@ -4,7 +4,8 @@ import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import serverless from 'serverless-http';  // 👈 AJOUT
+import serverless from 'serverless-http';
+import WebSocket from 'ws'; // <-- Support WebSocket pour Node.js 20
 
 dotenv.config();
 
@@ -12,9 +13,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Client Supabase avec transport WebSocket
 const supabase = createClient(
   process.env.VITE_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+    realtime: {
+      transport: WebSocket,
+    },
+  }
 );
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key_here';
@@ -30,7 +37,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
     const startISO = startOfDay.toISOString();
     const endISO = endOfDay.toISOString();
 
-    // 1. Ventes de jus (cooperants + retail)
     const { data: juiceSales, error: juiceError } = await supabase
       .from('stock_movements')
       .select(`
@@ -115,7 +121,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
       }
     }
 
-    // 2. Ventes de crédits / e-money (avec détails par type)
     const { data: creditSales, error: creditError } = await supabase
       .from('sales')
       .select('total_amount, payment_method, operator_id, sale_type, operators(name)')
@@ -144,7 +149,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
       operatorStats[opName] = (operatorStats[opName] || 0) + amount;
     });
 
-    // 3. Récupérer tous les produits avec détails
     const { data: allProducts, error: productError } = await supabase
       .from('products')
       .select('id, name, current_stock, reorder_level, size, bottles_per_pack')
@@ -318,16 +322,11 @@ app.get('/api/stock/daily', async (req, res) => {
     const startISO = start.toISOString();
     const endISO = end.toISOString();
 
-    console.log('📅 Période UTC :', startISO, '→', endISO);
-
     const { data: products, error: productError } = await supabase
       .from('products')
       .select('id, name, current_stock, reorder_level, size, bottles_per_pack');
 
-    if (productError) {
-      console.error('❌ Erreur produits :', productError);
-      throw productError;
-    }
+    if (productError) throw productError;
 
     const { data: movements, error: moveError } = await supabase
       .from('stock_movements')
@@ -335,12 +334,7 @@ app.get('/api/stock/daily', async (req, res) => {
       .gte('created_at', startISO)
       .lt('created_at', endISO);
 
-    if (moveError) {
-      console.error('❌ Erreur mouvements :', moveError);
-      throw moveError;
-    }
-
-    console.log(`📋 ${movements.length} mouvements trouvés`);
+    if (moveError) throw moveError;
 
     const productStats = {};
     products.forEach(p => {
@@ -358,21 +352,14 @@ app.get('/api/stock/daily', async (req, res) => {
 
     movements.forEach(m => {
       const pid = m.product_id;
-      if (!productStats[pid]) {
-        console.warn(`⚠️ Produit ${pid} non trouvé pour le mouvement`);
-        return;
-      }
+      if (!productStats[pid]) return;
       const qty = Math.abs(m.quantity_change);
       const type = m.movement_type;
 
       if (type === 'supplier_in' || type === 'cooperant_return') {
         productStats[pid].entries += qty;
-        console.log(`✅ Entrée: ${pid} +${qty} (${type})`);
       } else if (type === 'cooperant_take' || type === 'retail_sale') {
         productStats[pid].exits += qty;
-        console.log(`❌ Sortie: ${pid} -${qty} (${type})`);
-      } else {
-        console.log(`ℹ️ Type ignoré: ${type}`);
       }
     });
 
@@ -385,23 +372,17 @@ app.get('/api/stock/daily', async (req, res) => {
       };
     });
 
-    console.log('📊 Résultat final :');
-    result.forEach(r => {
-      console.log(`  ${r.name}: initial=${r.initialStock}, entrées=${r.entries}, sorties=${r.exits}, final=${r.finalStock}`);
-    });
-
     res.json({ success: true, data: result });
   } catch (error) {
-    console.error('❌ Erreur suivi journalier :', error);
+    console.error('Erreur suivi journalier:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 5 : Enregistrer une vente de crédit / e-money (COMPLÈTE)
+// ROUTE 5 : Enregistrer une vente
 // =============================================
 app.post('/api/sale', async (req, res) => {
-  console.log('📦 Données reçues :', req.body);
   try {
     const {
       operator_id,
@@ -436,28 +417,23 @@ app.post('/api/sale', async (req, res) => {
       sale_date: new Date().toISOString()
     };
 
-    console.log('📝 Données à insérer :', saleData);
-
     const { data: sale, error } = await supabase
       .from('sales')
       .insert(saleData)
       .select()
       .single();
 
-    if (error) {
-      console.error('❌ Erreur insertion vente:', error);
-      return res.status(500).json({ success: false, error: error.message, details: error });
-    }
+    if (error) throw error;
 
     res.json({ success: true, data: sale });
   } catch (error) {
-    console.error('❌ Erreur enregistrement vente:', error);
+    console.error('Erreur enregistrement vente:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 6 : Ajouter du stock à un opérateur (mégas, unités, FC, USD)
+// ROUTE 6 : Ajouter du stock à un opérateur
 // =============================================
 app.post('/api/operator/stock/add', async (req, res) => {
   try {
@@ -489,13 +465,13 @@ app.post('/api/operator/stock/add', async (req, res) => {
     if (updateError) throw updateError;
     res.json({ success: true, data: { newValue } });
   } catch (error) {
-    console.error('❌ Erreur ajout stock opérateur:', error);
+    console.error('Erreur ajout stock opérateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 7 : Gestion du stock des opérateurs (mégas / unités) - ajout/retrait
+// ROUTE 7 : Gestion du stock opérateur (ajout/retrait)
 // =============================================
 app.post('/api/stock/operator', async (req, res) => {
   try {
@@ -526,7 +502,7 @@ app.post('/api/stock/operator', async (req, res) => {
     if (updateError) throw updateError;
     res.json({ success: true, data: { newStock } });
   } catch (error) {
-    console.error('❌ Erreur mise à jour stock opérateur:', error);
+    console.error('Erreur mise à jour stock opérateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -545,7 +521,7 @@ app.get('/api/operators/:id/stock', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur récupération stock opérateur:', error);
+    console.error('Erreur récupération stock opérateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -572,7 +548,7 @@ app.get('/api/cash/transactions', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur récupération transactions:', error);
+    console.error('Erreur récupération transactions:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -601,7 +577,7 @@ app.post('/api/cash/transaction', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur ajout transaction:', error);
+    console.error('Erreur ajout transaction:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -618,13 +594,13 @@ app.get('/api/users', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur récupération utilisateurs:', error);
+    console.error('Erreur récupération utilisateurs:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 12 : Ajouter un utilisateur (avec hash du mot de passe)
+// ROUTE 12 : Ajouter un utilisateur
 // =============================================
 app.post('/api/users', async (req, res) => {
   try {
@@ -641,7 +617,7 @@ app.post('/api/users', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur ajout utilisateur:', error);
+    console.error('Erreur ajout utilisateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -666,7 +642,7 @@ app.put('/api/users/:id', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur mise à jour utilisateur:', error);
+    console.error('Erreur mise à jour utilisateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -684,13 +660,13 @@ app.delete('/api/users/:id', async (req, res) => {
     if (error) throw error;
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Erreur suppression utilisateur:', error);
+    console.error('Erreur suppression utilisateur:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 15 : Récupérer tous les paramètres
+// ROUTE 15 : Récupérer les paramètres
 // =============================================
 app.get('/api/settings', async (req, res) => {
   try {
@@ -701,7 +677,7 @@ app.get('/api/settings', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur récupération paramètres:', error);
+    console.error('Erreur récupération paramètres:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -725,13 +701,13 @@ app.put('/api/settings/:key', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ Erreur mise à jour paramètre:', error);
+    console.error('Erreur mise à jour paramètre:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 // =============================================
-// ROUTE 17 : Connexion utilisateur (login)
+// ROUTE 17 : Connexion (login)
 // =============================================
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -778,7 +754,7 @@ app.post('/api/auth/login', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Erreur login:', error);
+    console.error('Erreur login:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -808,7 +784,7 @@ app.get('/api/auth/me', async (req, res) => {
 
     res.json({ success: true, user });
   } catch (error) {
-    console.error('❌ Erreur vérification token:', error);
+    console.error('Erreur vérification token:', error);
     res.status(401).json({ success: false, error: 'Token invalide' });
   }
 });
@@ -816,11 +792,9 @@ app.get('/api/auth/me', async (req, res) => {
 // =============================================
 // ✅ EXPORT POUR VERCEL (serverless)
 // =============================================
-// On remplace app.listen par l'export du handler
-export const handler = serverless(app);
+export default serverless(app);
 
-// En local, on peut quand même écouter si on veut
-// (optionnel, pour le développement)
+// Pour le développement local
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
