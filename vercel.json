@@ -6,8 +6,8 @@
     },
     "backend": {
       "root": "backend",
-      "entrypoint": "server.js",
-      "runtime": "nodejs20.x"
+      "runtime": "nodejs20",
+      "entrypoint": "server.js"
     }
   },
   "rewrites": [
