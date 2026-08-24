@@ -1,0 +1,6 @@
+{
+  "name": "gloria-gestion-monorepo",
+  "scripts": {
+    "build": "echo 'Build handled by vercel.json'"
+  }
+}
