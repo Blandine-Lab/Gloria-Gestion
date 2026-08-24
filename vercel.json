@@ -6,7 +6,6 @@
     },
     "backend": {
       "root": "backend",
-      "runtime": "nodejs20",
       "entrypoint": "server.js"
     }
   },
