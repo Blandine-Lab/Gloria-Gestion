@@ -18,6 +18,11 @@
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "serverless-http": "^3.2.0",
-    "ws": "^8.18.0"
-  }
+    "ws": "^8.21.3"
+  },
+  "description": "",
+  "main": "server.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
